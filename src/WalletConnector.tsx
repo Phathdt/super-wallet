@@ -21,6 +21,7 @@ declare global {
   interface Window {
     ethereum?: any
     okxwallet?: any
+    phantom?: any
   }
 }
 
@@ -45,6 +46,7 @@ const WalletConnector = () => {
   const wallets = [
     { id: 'metamask', name: 'MetaMask' },
     { id: 'okx', name: 'OKX Wallet' },
+    { id: 'phantom', name: 'Phantom' },
   ]
 
   useEffect(() => {
@@ -56,7 +58,6 @@ const WalletConnector = () => {
     }
   }, [chain?.id])
 
-  // Handle connect status changes
   useEffect(() => {
     if (!isConnecting) return
 
@@ -75,8 +76,27 @@ const WalletConnector = () => {
       return window.ethereum
     } else if (walletId === 'okx' && window.okxwallet) {
       return window.okxwallet
+    } else if (walletId === 'phantom' && window.phantom?.ethereum) {
+      return window.phantom.ethereum
     }
     return null
+  }
+
+  const requestPhantomAuthorization = async (provider: any) => {
+    try {
+      const accounts = await provider.request({
+        method: 'eth_requestAccounts',
+      })
+
+      if (!accounts || accounts.length === 0) {
+        throw new Error('No accounts found')
+      }
+
+      return accounts[0]
+    } catch (error) {
+      console.error('Phantom authorization error:', error)
+      throw error
+    }
   }
 
   const handleConnect = async () => {
@@ -103,7 +123,10 @@ const WalletConnector = () => {
           await disconnect()
         }
 
-        // Switch/Add chain
+        if (selectedWallet === 'phantom') {
+          await requestPhantomAuthorization(provider)
+        }
+
         const currentChainId = await provider.request({ method: 'eth_chainId' })
         if (parseInt(currentChainId, 16) !== network.chain.id) {
           try {
@@ -136,6 +159,7 @@ const WalletConnector = () => {
         const connectorId = {
           metamask: 'io.metamask',
           okx: 'com.okex.wallet',
+          phantom: 'app.phantom',
         }[selectedWallet]
 
         const connector = connectors.find((c) => c.id === connectorId)
@@ -144,7 +168,7 @@ const WalletConnector = () => {
           throw new Error('No suitable connector found')
         }
 
-        connect({ connector })
+        await connect({ connector })
       } else {
         setIsConnecting(false)
         toast({
@@ -155,14 +179,22 @@ const WalletConnector = () => {
           } is not installed`,
         })
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to connect:', error)
       setIsConnecting(false)
-      setConnectError((error as Error).message || 'Failed to connect wallet')
+
+      let errorMessage = 'Failed to connect wallet'
+      if (error.code === 4001) {
+        errorMessage = 'User rejected the connection request'
+      } else if (error.message) {
+        errorMessage = error.message
+      }
+
+      setConnectError(errorMessage)
       toast({
         variant: 'destructive',
         title: 'Connection Failed',
-        description: 'Failed to connect wallet. Please try again.',
+        description: errorMessage,
       })
     }
   }
