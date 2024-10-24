@@ -3,6 +3,7 @@ import '@rainbow-me/rainbowkit/styles.css'
 import { http } from 'viem'
 import { createConfig, WagmiProvider } from 'wagmi'
 import { base, baseSepolia, mainnet } from 'wagmi/chains'
+import { injected } from 'wagmi/connectors'
 
 import { Toaster } from '@/components/ui/toaster'
 import { RainbowKitProvider } from '@rainbow-me/rainbowkit'
@@ -11,7 +12,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import WalletConnector from './WalletConnector'
 
 const projectId = import.meta.env.VITE_WALLET_CONNECT_PROJECT_ID
-console.log('🚀 ~ projectId:', projectId)
 
 if (!projectId) {
   throw new Error('VITE_WALLET_CONNECT_PROJECT_ID is not defined')
@@ -20,13 +20,17 @@ if (!projectId) {
 const queryClient = new QueryClient()
 
 const config = createConfig({
-  chains: [mainnet, base],
+  chains: [mainnet, base, baseSepolia],
   transports: {
     [mainnet.id]: http(),
     [base.id]: http(),
     [baseSepolia.id]: http(),
   },
-  connectors: [],
+  connectors: [
+    injected({
+      shimDisconnect: true,
+    }),
+  ],
 })
 
 function App() {

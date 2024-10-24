@@ -3,7 +3,6 @@
 import { Network, Wallet } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
-import { base, baseSepolia, mainnet } from 'wagmi/chains'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -17,6 +16,14 @@ import {
 } from '@/components/ui/select'
 import { useToast } from '@/hooks/use-toast'
 
+import {
+  getCompatibleWallets,
+  networks,
+  walletConnectorIds,
+  WalletId,
+  walletNetworkCompatibility,
+} from './wallet-config'
+
 declare global {
   interface Window {
     ethereum?: any
@@ -27,7 +34,7 @@ declare global {
 
 const WalletConnector = () => {
   const [selectedNetwork, setSelectedNetwork] = useState('')
-  const [selectedWallet, setSelectedWallet] = useState('')
+  const [selectedWallet, setSelectedWallet] = useState<WalletId | ''>('')
   const [signature, setSignature] = useState<string | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
@@ -37,27 +44,32 @@ const WalletConnector = () => {
   const { connect, connectors } = useConnect()
   const { disconnect } = useDisconnect()
 
-  const networks = [
-    { id: 'mainnet', name: 'Ethereum Mainnet', chain: mainnet },
-    { id: 'base', name: 'Base', chain: base },
-    { id: 'base-sepolia', name: 'Base Sepolia', chain: baseSepolia },
-  ]
-
-  const wallets = [
-    { id: 'metamask', name: 'MetaMask' },
-    { id: 'okx', name: 'OKX Wallet' },
-    { id: 'phantom', name: 'Phantom' },
-  ]
-
+  // Effect to handle chain changes
   useEffect(() => {
     if (chain?.id) {
       const network = networks.find((n) => n.chain.id === chain.id)
       if (network) {
         setSelectedNetwork(network.id)
+        // If current wallet doesn't support this network, reset wallet selection
+        if (
+          selectedWallet &&
+          !walletNetworkCompatibility[selectedWallet].some(
+            (n) => n.id === network.id
+          )
+        ) {
+          setSelectedWallet('')
+        }
       }
     }
   }, [chain?.id])
 
+  // Reset wallet selection when network changes
+  useEffect(() => {
+    setSelectedWallet('')
+    setConnectError(null)
+  }, [selectedNetwork])
+
+  // Handle connect status changes
   useEffect(() => {
     if (!isConnecting) return
 
@@ -71,7 +83,7 @@ const WalletConnector = () => {
     }
   }, [isConnected, isConnecting, toast])
 
-  const getWalletProvider = (walletId: string) => {
+  const getWalletProvider = (walletId: WalletId) => {
     if (walletId === 'metamask' && window.ethereum?.isMetaMask) {
       return window.ethereum
     } else if (walletId === 'okx' && window.okxwallet) {
@@ -123,10 +135,12 @@ const WalletConnector = () => {
           await disconnect()
         }
 
+        // Handle Phantom authorization first
         if (selectedWallet === 'phantom') {
           await requestPhantomAuthorization(provider)
         }
 
+        // Switch/Add chain
         const currentChainId = await provider.request({ method: 'eth_chainId' })
         if (parseInt(currentChainId, 16) !== network.chain.id) {
           try {
@@ -156,12 +170,7 @@ const WalletConnector = () => {
           }
         }
 
-        const connectorId = {
-          metamask: 'io.metamask',
-          okx: 'com.okex.wallet',
-          phantom: 'app.phantom',
-        }[selectedWallet]
-
+        const connectorId = walletConnectorIds[selectedWallet]
         const connector = connectors.find((c) => c.id === connectorId)
 
         if (!connector) {
@@ -175,8 +184,8 @@ const WalletConnector = () => {
           variant: 'destructive',
           title: 'Error',
           description: `${
-            wallets.find((w) => w.id === selectedWallet)?.name
-          } is not installed`,
+            selectedWallet.charAt(0).toUpperCase() + selectedWallet.slice(1)
+          } wallet is not installed`,
         })
       }
     } catch (error: any) {
@@ -200,7 +209,7 @@ const WalletConnector = () => {
   }
 
   const handleSign = async () => {
-    if (!isConnected || !address) {
+    if (!isConnected || !address || !selectedWallet) {
       toast({
         variant: 'destructive',
         title: 'Error',
@@ -280,28 +289,32 @@ const WalletConnector = () => {
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Select Wallet</label>
-              <Select
-                value={selectedWallet}
-                onValueChange={setSelectedWallet}
-                disabled={isConnected || isConnecting}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose wallet..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {wallets.map((wallet) => (
-                    <SelectItem key={wallet.id} value={wallet.id}>
-                      <div className="flex items-center gap-2">
-                        <Wallet className="w-4 h-4" />
-                        {wallet.name}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {selectedNetwork && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Select Wallet</label>
+                <Select
+                  value={selectedWallet}
+                  onValueChange={(value) =>
+                    setSelectedWallet(value as WalletId)
+                  }
+                  disabled={isConnected || isConnecting || !selectedNetwork}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose wallet..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {getCompatibleWallets(selectedNetwork).map((wallet) => (
+                      <SelectItem key={wallet.id} value={wallet.id}>
+                        <div className="flex items-center gap-2">
+                          <Wallet className="w-4 h-4" />
+                          {wallet.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {connectError && (
               <Alert variant="destructive">
