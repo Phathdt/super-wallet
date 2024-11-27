@@ -24,25 +24,23 @@ import {
   walletNetworkCompatibility,
 } from './wallet-config'
 
-declare global {
-  interface Window {
-    ethereum?: any
-    okxwallet?: any
-    phantom?: any
-  }
-}
-
 const WalletConnector = () => {
   const [selectedNetwork, setSelectedNetwork] = useState('')
   const [selectedWallet, setSelectedWallet] = useState<WalletId | ''>('')
   const [signature, setSignature] = useState<string | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
+  const [isMobile, setIsMobile] = useState(false)
 
   const { toast } = useToast()
   const { address, isConnected, chain } = useAccount()
-  const { connect, connectors } = useConnect()
+  const { connect, connectors, status } = useConnect()
   const { disconnect } = useDisconnect()
+
+  // Detect if user is on mobile
+  useEffect(() => {
+    setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent))
+  }, [])
 
   // Effect to handle chain changes
   useEffect(() => {
@@ -50,7 +48,6 @@ const WalletConnector = () => {
       const network = networks.find((n) => n.chain.id === chain.id)
       if (network) {
         setSelectedNetwork(network.id)
-        // If current wallet doesn't support this network, reset wallet selection
         if (
           selectedWallet &&
           !walletNetworkCompatibility[selectedWallet].some(
@@ -63,7 +60,6 @@ const WalletConnector = () => {
     }
   }, [chain?.id])
 
-  // Reset wallet selection when network changes
   useEffect(() => {
     setSelectedWallet('')
     setConnectError(null)
@@ -71,44 +67,30 @@ const WalletConnector = () => {
 
   // Handle connect status changes
   useEffect(() => {
-    if (!isConnecting) return
-
-    if (isConnected) {
+    if (status === 'success') {
       setIsConnecting(false)
       setConnectError(null)
       toast({
         title: 'Success',
         description: 'Wallet connected successfully!',
       })
-    }
-  }, [isConnected, isConnecting, toast])
-
-  const getWalletProvider = (walletId: WalletId) => {
-    if (walletId === 'metamask' && window.ethereum?.isMetaMask) {
-      return window.ethereum
-    } else if (walletId === 'okx' && window.okxwallet) {
-      return window.okxwallet
-    } else if (walletId === 'phantom' && window.phantom?.ethereum) {
-      return window.phantom.ethereum
-    }
-    return null
-  }
-
-  const requestPhantomAuthorization = async (provider: any) => {
-    try {
-      const accounts = await provider.request({
-        method: 'eth_requestAccounts',
+    } else if (status === 'error') {
+      setIsConnecting(false)
+      toast({
+        variant: 'destructive',
+        title: 'Connection Failed',
+        description: 'Failed to connect wallet. Please try again.',
       })
-
-      if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts found')
-      }
-
-      return accounts[0]
-    } catch (error) {
-      console.error('Phantom authorization error:', error)
-      throw error
     }
+  }, [status, toast])
+
+  const getMobileWalletDeepLink = (walletId: WalletId) => {
+    const deepLinks: Record<WalletId, string> = {
+      metamask: 'metamask://',
+      phantom: 'phantom://',
+      okx: 'okx://',
+    }
+    return deepLinks[walletId]
   }
 
   const handleConnect = async () => {
@@ -128,65 +110,59 @@ const WalletConnector = () => {
     setConnectError(null)
 
     try {
-      const provider = getWalletProvider(selectedWallet)
+      if (isConnected) {
+        await disconnect()
+      }
 
-      if (provider) {
-        if (isConnected) {
-          await disconnect()
+      // Find the appropriate connector
+      const connector = connectors.find((c) => {
+        if (isMobile) {
+          return c.id === 'walletConnect'
         }
 
-        // Handle Phantom authorization first
-        if (selectedWallet === 'phantom') {
-          await requestPhantomAuthorization(provider)
-        }
+        return c.id === walletConnectorIds[selectedWallet]
+      })
 
-        // Switch/Add chain
-        const currentChainId = await provider.request({ method: 'eth_chainId' })
-        if (parseInt(currentChainId, 16) !== network.chain.id) {
-          try {
-            await provider.request({
-              method: 'wallet_switchEthereumChain',
-              params: [{ chainId: `0x${network.chain.id.toString(16)}` }],
+      if (!connector) {
+        throw new Error('No suitable connector found')
+      }
+
+      // If on mobile and we have a deep link, try to open the wallet app
+      if (isMobile) {
+        const deepLink = getMobileWalletDeepLink(selectedWallet)
+        if (deepLink) {
+          window.location.href = deepLink
+        }
+      }
+
+      // Connect using the selected connector
+      await connect({ connector })
+
+      // Switch network if needed (for non-mobile)
+      if (window.ethereum && !isMobile) {
+        try {
+          await window.ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: `0x${network.chain.id.toString(16)}` }],
+          })
+        } catch (switchError: any) {
+          if (switchError.code === 4902) {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [
+                {
+                  chainId: `0x${network.chain.id.toString(16)}`,
+                  chainName: network.chain.name,
+                  nativeCurrency: network.chain.nativeCurrency,
+                  rpcUrls: [network.chain.rpcUrls.default.http[0]],
+                  blockExplorerUrls: [
+                    network.chain.blockExplorers?.default.url,
+                  ],
+                },
+              ],
             })
-          } catch (switchError: any) {
-            if (switchError.code === 4902) {
-              await provider.request({
-                method: 'wallet_addEthereumChain',
-                params: [
-                  {
-                    chainId: `0x${network.chain.id.toString(16)}`,
-                    chainName: network.chain.name,
-                    nativeCurrency: network.chain.nativeCurrency,
-                    rpcUrls: [network.chain.rpcUrls.default.http[0]],
-                    blockExplorerUrls: [
-                      network.chain.blockExplorers?.default.url,
-                    ],
-                  },
-                ],
-              })
-            } else {
-              throw switchError
-            }
           }
         }
-
-        const connectorId = walletConnectorIds[selectedWallet]
-        const connector = connectors.find((c) => c.id === connectorId)
-
-        if (!connector) {
-          throw new Error('No suitable connector found')
-        }
-
-        await connect({ connector })
-      } else {
-        setIsConnecting(false)
-        toast({
-          variant: 'destructive',
-          title: 'Error',
-          description: `${
-            selectedWallet.charAt(0).toUpperCase() + selectedWallet.slice(1)
-          } wallet is not installed`,
-        })
       }
     } catch (error: any) {
       console.error('Failed to connect:', error)
@@ -222,25 +198,49 @@ const WalletConnector = () => {
       'Welcome to our dApp! Please sign this message to verify your ownership.'
 
     try {
-      const provider = getWalletProvider(selectedWallet)
+      let provider
+      if (selectedWallet === 'metamask') {
+        provider = window.ethereum
+      } else if (selectedWallet === 'okx') {
+        provider = window.okxwallet
+      } else if (selectedWallet === 'phantom') {
+        provider = window.phantom
+      }
+
       if (!provider) throw new Error('No provider found')
 
-      const signature = await provider.request({
-        method: 'personal_sign',
-        params: [message, address],
-      })
+      let signature
+      if (selectedWallet === 'okx') {
+        // OKX cần thứ tự [address, message]
+        signature = await provider.request({
+          method: 'personal_sign',
+          params: [address, message],
+        })
+      } else {
+        // MetaMask và các ví khác dùng thứ tự [message, address]
+        signature = await provider.request({
+          method: 'personal_sign',
+          params: [message, address],
+        })
+      }
+
       setSignature(signature)
 
       toast({
         title: 'Success',
         description: 'Message signed successfully!',
       })
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to sign message:', error)
+      let errorMessage = 'Failed to sign message. Please try again.'
+      if (error.message) {
+        errorMessage = error.message
+      }
+
       toast({
         variant: 'destructive',
         title: 'Signing Failed',
-        description: 'Failed to sign message. Please try again.',
+        description: errorMessage,
       })
     }
   }
@@ -262,7 +262,7 @@ const WalletConnector = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Wallet className="w-5 h-5" />
-              Connect Wallet
+              Connect Wallet {isMobile ? '(Mobile)' : '(Desktop)'}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
